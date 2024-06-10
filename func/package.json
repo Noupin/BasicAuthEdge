@@ -10,7 +10,5 @@
   "author": "",
   "license": "ISC",
   "description": "",
-  "dependencies": {
-    "@aws-sdk/client-ssm": "^3.574.0"
-  }
+  "dependencies": {}
 }

@@ -1,96 +1,93 @@
-import {
-  SSMClient,
-  GetParameterCommand,
-  GetParametersByPathCommand,
-} from "@aws-sdk/client-ssm";
-import crypto from "crypto";
+import cf from "cloudfront";
+
+const kvsId = "3c7a330f-02a4-4917-af31-e18fae2a2905";
+const kvsHandle = cf.kvs(kvsId);
 
 const generateUnauthorizedResponse = () => {
   return {
-    status: "401", // Unauthorized
+    statusCode: 401,
     statusDescription: "Unauthorized",
     headers: {
-      "www-authenticate": [
-        { key: "WWW-Authenticate", value: "Basic realm='Secure Area'" },
-      ],
-      "content-type": [{ key: "Content-Type", value: "text/html" }],
+      "www-authenticate": { value: 'Basic realm="Secure Area"' },
+      "content-type": { value: "text/html" },
     },
-    body: "Unauthorized: Access is denied due to invalid credentials.",
+    body: "Unauthorized: Access is denied.",
   };
 };
 
-function timingSafeEqual(a, b) {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  return crypto.timingSafeEqual(bufA, bufB);
-}
+const isValidPart = (part) => {
+  const partRegex = /^[a-zA-Z0-9\-_.@]+$/;
+  return partRegex.test(part);
+};
 
-function isValidUsername(username) {
-  const usernameRegex = /^[a-zA-Z0-9]+$/;
-  return usernameRegex.test(username);
-}
+const timingSafeEqual = (a, b) => {
+  const length = Math.max(a.length, b.length);
+  let result = 0;
+  for (let i = 0; i < length; i++) {
+    result |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return result === 0;
+};
 
-export const handler = async (event) => {
-  const request = event.Records[0].cf.request;
+async function handler(event) {
+  const request = event.request;
   const headers = request.headers;
+
   if (!headers.authorization || headers.authorization.length === 0) {
     return generateUnauthorizedResponse();
   }
 
-  const [username, password] = Buffer.from(
-    headers.authorization[0].value.split(" ")[1],
-    "base64"
-  )
-    .toString("utf-8")
-    .split(":");
-
-  if (!isValidUsername(username)) {
+  const authString = headers.authorization.value.split(" ")[1];
+  if (!authString) {
     return generateUnauthorizedResponse();
   }
 
-  const ssm = new SSMClient({ region: "us-east-1" });
+  let decodedAuth;
   try {
-    const getAvailableUsernamesCommand = new GetParametersByPathCommand({
-      Path: "/password/loom/frontend/devEnvironment",
-      WithDecryption: true,
+    decodedAuth = atob(authString).split(":");
+  } catch (error) {
+    return generateUnauthorizedResponse();
+  }
+
+  if (decodedAuth.length !== 2) {
+    return generateUnauthorizedResponse();
+  }
+
+  const username = decodedAuth[0];
+  const password = decodedAuth[1];
+
+  // Extract environment and app from the hostname
+  const hostnameParts = headers.host.value.split(".");
+  const environment = hostnameParts[0];
+  const app = hostnameParts[1];
+
+  if (
+    !isValidPart(environment) ||
+    !isValidPart(app) ||
+    !isValidPart(username)
+  ) {
+    return generateUnauthorizedResponse();
+  }
+
+  const key = `${environment}/${app}/${username}`;
+  try {
+    const passwordToCheckAgainst = await kvsHandle.get(key, {
+      format: "string",
     });
 
-    const availableUsernamesResponse = await ssm.send(
-      getAvailableUsernamesCommand
-    );
-    const availableUsernames = availableUsernamesResponse.Parameters.map(
-      (param) => param.Name.split("/").pop()
-    );
-
-    if (!availableUsernames.includes(username)) {
+    if (
+      !passwordToCheckAgainst ||
+      !timingSafeEqual(password, passwordToCheckAgainst)
+    ) {
       return generateUnauthorizedResponse();
     }
 
-    const getParameterCommand = new GetParameterCommand({
-      Name: `/password/loom/frontend/devEnvironment/${username}`,
-      WithDecryption: true,
-    });
-    const response = await ssm.send(getParameterCommand);
-
-    // Basic Authentication Credentials
-    const passwordToCheckAgainst = response.Parameter.Value;
-
-    // Check for Basic Authentication header
-    if (!timingSafeEqual(password, passwordToCheckAgainst)) {
-      return generateUnauthorizedResponse();
-    }
+    // Authentication successful, return the original request
     return request;
   } catch (error) {
-    return {
-      status: "500",
-      statusDescription: "Internal Server Error",
-      headers: {
-        "content-type": [{ key: "Content-Type", value: "text/html" }],
-      },
-      body: "Internal Server Error: Please contact the system administrator.",
-    };
+    return generateUnauthorizedResponse();
   }
-};
+}
 
 // handler({
 //   Records: [

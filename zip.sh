@@ -1,4 +1,4 @@
 #!/bin/bash
 
-# Zip the func folder
-zip -r func.zip func
+# Zip the func folder and overwrite if needed
+zip -r -f func.zip func
